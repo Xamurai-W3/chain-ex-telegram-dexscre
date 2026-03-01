@@ -2,44 +2,40 @@
   "projectId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b",
   "commands": [
     {
-      "command": "/help",
-      "description": "Explains what Chain EX does and how to use /start (or /restart), complete the wizard, then use /next to page results.",
-      "usage": "/help",
+      "command": "/start",
+      "description": "Clears your current search state, sends the welcome message, and starts Step 1 of the inline-button wizard.",
+      "usage": "/start",
       "examples": [
-        "User: /help → Bot: explains wizard + /next pagination"
+        "User: /start → Bot: Welcome to Chain EX… then shows “Step 1 of 6\\nSelect Chain:”"
       ],
-      "example": "User: /help → Bot: explains wizard + /next pagination",
-      "notes": "Keeps it brief as requested."
+      "notes": "Wizard is inline buttons only."
     },
     {
-      "command": "/next",
-      "description": "Shows the next 10 token results from your last completed search.",
-      "usage": "/next",
+      "command": "/help",
+      "description": "Explains how to use /start or /restart, complete the wizard, then use /next to paginate results.",
+      "usage": "/help",
       "examples": [
-        "User: /next → Bot: shows tokens 11–20 and then “Type /next to see more results.”"
+        "User: /help → Bot: brief instructions"
       ],
-      "example": "User: /next → Bot: shows tokens 11–20 and then “Type /next to see more results.”",
-      "notes": "If no more results remain, the bot sends: “No more tokens match your filters. Try adjusting your criteria.”"
+      "notes": ""
     },
     {
       "command": "/restart",
-      "description": "Clears your current session state and restarts the wizard from Step 1.",
+      "description": "Clears current session state and restarts the wizard from Step 1 without re-sending the welcome message.",
       "usage": "/restart",
       "examples": [
         "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”"
       ],
-      "example": "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”",
-      "notes": "Does not re-send the welcome message; it just restarts the wizard."
+      "notes": ""
     },
     {
-      "command": "/start",
-      "description": "Clears your current search state, sends the Chain EX welcome message, and starts Step 1 of the inline-button wizard.",
-      "usage": "/start",
+      "command": "/next",
+      "description": "Shows the next 10 results from the last completed search.",
+      "usage": "/next",
       "examples": [
-        "User: /start → Bot: Welcome… then shows “Step 1 of 6\\nSelect Chain:” with buttons"
+        "User: /next → Bot: shows the next page, or the no-more-results message"
       ],
-      "example": "User: /start → Bot: Welcome… then shows “Step 1 of 6\\nSelect Chain:” with buttons",
-      "notes": "The welcome message text is fixed. The wizard uses inline buttons only."
+      "notes": "When out of results: “No more tokens match your filters. Try adjusting your criteria.”"
     }
   ],
   "aiMessages": [
@@ -50,6 +46,14 @@
     {
       "role": "assistant",
       "content": "Created a clean Chain EX Telegram bot project (grammY) with /start /help /restart /next, a 6-step inline-button wizard with “Step X of 6” prompts, in-memory per-user session state, Dexscreener retrieval + filtering (age, market cap, socials, active pairs), deterministic dedupe, and 10-per-page pagination. Added required exact user-facing error messages, production-safe logs, long polling via @grammyjs/runner, DOCS.md, README.md, and a minimal .env.sample with TELEGRAM_BOT_TOKEN only. Removed all AI and DB modules/envs to match the no-AI/no-other-integrations requirement.\n\nFiles touched (21): .env.sample, DOCS.md, README.md, package.json, project.json, src/bot.js…\nValidation: ✅ project passes syntax/basic checks after this edit."
+    },
+    {
+      "role": "user",
+      "content": "The bot is not responding. Check for errors and fix"
+    },
+    {
+      "role": "assistant",
+      "content": "Fixed responsiveness and hard failures by logging unhandledRejection instead of exiting, adding robust polling lifecycle logs, and improving 409 Conflict recovery (deleteWebhook + backoff). Hardened session defaults so stale/missing state can’t crash callbacks, ensured all callback queries are answered with a helpful stale-menu message, added a minimal non-command fallback message, and made Dexscreener calls timeout + retry with safe logging. Updated .env.sample, README.md, and DOCS.md with a short not-responding troubleshooting section.\n\nFiles touched (9): .env.sample, DOCS.md, README.md, package.json, src/bot.js, src/index.js…\nValidation: ✅ project passes syntax/basic checks after this edit."
     }
   ],
   "createdBy": "699341b3afe4e0ad112a30a2",
@@ -287,7 +291,7 @@
       "runId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b:mm7wnyf2:neheix",
       "lastUserMessage": "The bot is not responding. Check for errors and fix",
       "startedAt": "2026-03-01T14:59:47.315Z",
-      "updatedAt": "2026-03-01T15:31:05.783Z",
+      "updatedAt": "2026-03-01T15:31:05.991Z",
       "message": "Syncing environment template with used env variables…",
       "commands": [],
       "ok": true,
@@ -503,7 +507,7 @@
     "runId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b:mm7wnyf2:neheix",
     "lastUserMessage": "The bot is not responding. Check for errors and fix",
     "startedAt": "2026-03-01T14:59:47.315Z",
-    "updatedAt": "2026-03-01T15:31:05.783Z",
+    "updatedAt": "2026-03-01T15:31:05.991Z",
     "message": "Syncing environment template with used env variables…",
     "commands": [],
     "ok": true,
@@ -716,50 +720,60 @@
     {
       "key": "TELEGRAM_BOT_TOKEN",
       "title": "Telegram Bot Token",
-      "description": "Required. The bot token from BotFather used to connect to Telegram.",
-      "usage": "Read at startup; the process exits with a clear message if missing.",
+      "description": "Required. Used to connect to Telegram via grammY.",
+      "usage": "Read at startup; if missing, the bot exits with a clear message.",
       "howToGet": "Create a bot with @BotFather and copy the token.",
       "example": "123456789:AA... (format example)",
       "isSecret": true,
       "required": true
+    },
+    {
+      "key": "MONGODB_URI",
+      "title": "MongoDB Connection String",
+      "description": "Optional. Reserved for future persistence. The bot will boot even if missing.",
+      "usage": "Only logged as present/absent. No DB operations are required for the bot’s core behavior.",
+      "howToGet": "From your MongoDB provider dashboard.",
+      "example": "mongodb+srv://user:pass@cluster.example.mongodb.net/dbname",
+      "isSecret": true,
+      "required": false
     }
   ],
   "commandDocs": [
     {
       "command": "/start",
-      "description": "Clears your current search state, sends the Chain EX welcome message, and starts Step 1 of the inline-button wizard.",
+      "description": "Clears your current search state, sends the welcome message, and starts Step 1 of the inline-button wizard.",
       "usage": "/start",
       "examples": [
-        "User: /start → Bot: Welcome… then shows “Step 1 of 6\\nSelect Chain:” with buttons"
+        "User: /start → Bot: Welcome to Chain EX… then shows “Step 1 of 6\\nSelect Chain:”"
       ],
-      "notes": "The welcome message text is fixed. The wizard uses inline buttons only."
+      "notes": "Wizard is inline buttons only."
     },
     {
       "command": "/help",
-      "description": "Explains what Chain EX does and how to use /start (or /restart), complete the wizard, then use /next to page results.",
+      "description": "Explains how to use /start or /restart, complete the wizard, then use /next to paginate results.",
       "usage": "/help",
       "examples": [
-        "User: /help → Bot: explains wizard + /next pagination"
+        "User: /help → Bot: brief instructions"
       ],
-      "notes": "Keeps it brief as requested."
+      "notes": ""
     },
     {
       "command": "/restart",
-      "description": "Clears your current session state and restarts the wizard from Step 1.",
+      "description": "Clears current session state and restarts the wizard from Step 1 without re-sending the welcome message.",
       "usage": "/restart",
       "examples": [
         "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”"
       ],
-      "notes": "Does not re-send the welcome message; it just restarts the wizard."
+      "notes": ""
     },
     {
       "command": "/next",
-      "description": "Shows the next 10 token results from your last completed search.",
+      "description": "Shows the next 10 results from the last completed search.",
       "usage": "/next",
       "examples": [
-        "User: /next → Bot: shows tokens 11–20 and then “Type /next to see more results.”"
+        "User: /next → Bot: shows the next page, or the no-more-results message"
       ],
-      "notes": "If no more results remain, the bot sends: “No more tokens match your filters. Try adjusting your criteria.”"
+      "notes": "When out of results: “No more tokens match your filters. Try adjusting your criteria.”"
     }
   ]
 }
