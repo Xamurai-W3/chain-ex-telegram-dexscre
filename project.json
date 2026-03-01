@@ -2,13 +2,30 @@
   "projectId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b",
   "commands": [
     {
+      "command": "/start",
+      "description": "Clears your current search state, sends the welcome message, and starts Step 1 of the inline-button wizard.",
+      "usage": "/start",
+      "examples": [
+        "User: /start → Bot: Welcome to Chain EX… then shows “Step 1 of 6\\nSelect Chain:”"
+      ],
+      "notes": "Wizard is inline buttons only."
+    },
+    {
       "command": "/help",
       "description": "Explains how to use /start or /restart, complete the wizard, then use /next to paginate results.",
       "usage": "/help",
       "examples": [
         "User: /help → Bot: brief instructions"
       ],
-      "example": "User: /help → Bot: brief instructions",
+      "notes": ""
+    },
+    {
+      "command": "/restart",
+      "description": "Clears current session state and restarts the wizard from Step 1 without re-sending the welcome message.",
+      "usage": "/restart",
+      "examples": [
+        "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”"
+      ],
       "notes": ""
     },
     {
@@ -18,28 +35,17 @@
       "examples": [
         "User: /next → Bot: shows the next page, or the no-more-results message"
       ],
-      "example": "User: /next → Bot: shows the next page, or the no-more-results message",
       "notes": "When out of results: “No more tokens match your filters. Try adjusting your criteria.”"
     },
     {
-      "command": "/restart",
-      "description": "Clears current session state and restarts the wizard from Step 1 without re-sending the welcome message.",
-      "usage": "/restart",
+      "command": "/dexhealth",
+      "description": "Admin-only DexScreener health check. Performs a lightweight DexScreener request and reports OK/FAIL with latency and error details.",
+      "usage": "/dexhealth",
       "examples": [
-        "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”"
+        "User (admin): /dexhealth → Bot: OK latencyMs=123 pairs=180",
+        "User (admin): /dexhealth → Bot: FAIL errorType=RATE_LIMIT status=429 latencyMs=50"
       ],
-      "example": "User: /restart → Bot: shows “Step 1 of 6\\nSelect Chain:”",
-      "notes": ""
-    },
-    {
-      "command": "/start",
-      "description": "Clears your current search state, sends the welcome message, and starts Step 1 of the inline-button wizard.",
-      "usage": "/start",
-      "examples": [
-        "User: /start → Bot: Welcome to Chain EX… then shows “Step 1 of 6\\nSelect Chain:”"
-      ],
-      "example": "User: /start → Bot: Welcome to Chain EX… then shows “Step 1 of 6\\nSelect Chain:”",
-      "notes": "Wizard is inline buttons only."
+      "notes": "Only works when ADMIN_TELEGRAM_IDS is set and includes your Telegram numeric user ID. Not listed in /help."
     }
   ],
   "aiMessages": [
@@ -64,6 +70,14 @@
     {
       "role": "assistant",
       "content": "⚠️ Diagnostic\n\nServer logs show a runtime problem\nI checked your recent Server logs and found lines that likely explain the failure.\n\nWhat I saw:\n- '<title>Error</title>\\n' +\n- [grammY runner] Error while fetching updates:\n- [grammY runner] GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)\n- at toGrammyError (/opt/render/project/src/node_modules/grammy/out/core/error.js:47:12)\n- error_code: 409,\n- [process] unhandledRejection {\n- err: \"Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)\"\n- '<html lang=\"en\">\\n' +\n\nIf you want, tell me what you want to fix (e.g. “make the bot start on the Server”) and I can try to update the code."
+    },
+    {
+      "role": "user",
+      "content": "I'm getting an error message saying Unable to fetch data from dexscreener"
+    },
+    {
+      "role": "assistant",
+      "content": "Implemented a hardened, centralized DexScreener service with env-tunable timeout/retry/backoff (including 429 Retry-After), defensive JSON/schema validation, normalized error results, and detailed per-call logs. Updated bot fetch flow to use context-aware user messages by error type, keep cached pagination working, and added an optional admin-only /dexhealth command gated by ADMIN_TELEGRAM_IDS. Added startup env sanity logs and updated .env.sample, DOCS.md, and CHANGELOG.md.\n\nFiles touched (7): .env.sample, CHANGELOG.md, DOCS.md, package.json, src/bot.js, src/index.js…\nValidation: ✅ project passes syntax/basic checks after this edit."
     }
   ],
   "createdBy": "699341b3afe4e0ad112a30a2",
@@ -540,7 +554,7 @@
       "runId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b:mm7x5lk6:32w4vg",
       "lastUserMessage": "I'm getting an error message saying Unable to fetch data from dexscreener",
       "startedAt": "2026-03-01T14:59:47.315Z",
-      "updatedAt": "2026-03-01T15:45:04.982Z",
+      "updatedAt": "2026-03-01T15:45:05.209Z",
       "message": "Syncing environment template with used env variables…",
       "commands": [],
       "ok": true,
@@ -780,7 +794,7 @@
     "runId": "2d2d3afe-9cf2-422c-bb9d-92db037f730b:mm7x5lk6:32w4vg",
     "lastUserMessage": "I'm getting an error message saying Unable to fetch data from dexscreener",
     "startedAt": "2026-03-01T14:59:47.315Z",
-    "updatedAt": "2026-03-01T15:45:04.982Z",
+    "updatedAt": "2026-03-01T15:45:05.209Z",
     "message": "Syncing environment template with used env variables…",
     "commands": [],
     "ok": true,
@@ -1033,6 +1047,56 @@
       "example": "mongodb+srv://user:pass@cluster.example.mongodb.net/dbname",
       "isSecret": true,
       "required": false
+    },
+    {
+      "key": "DEXSCREENER_BASE_URL",
+      "title": "DexScreener Base URL",
+      "description": "Optional. Overrides the DexScreener API base URL used by the bot.",
+      "usage": "Used by src/services/dexscreener.js for all requests. Defaults to https://api.dexscreener.com",
+      "howToGet": "Leave empty unless you are using a proxy or a DexScreener mirror.",
+      "example": "https://api.dexscreener.com",
+      "isSecret": false,
+      "required": false
+    },
+    {
+      "key": "DEXSCREENER_TIMEOUT_MS",
+      "title": "DexScreener Timeout (ms)",
+      "description": "Optional. Request timeout for DexScreener calls.",
+      "usage": "AbortController cancels requests after this many milliseconds. Default is 10000.",
+      "howToGet": "Tune if your host/network is slow or if you want faster failures.",
+      "example": "10000",
+      "isSecret": false,
+      "required": false
+    },
+    {
+      "key": "DEXSCREENER_RETRY_MAX",
+      "title": "DexScreener Max Retries",
+      "description": "Optional. Maximum number of retries for retryable DexScreener failures (network, timeout, 429, 502/503/504).",
+      "usage": "Total attempts = DEXSCREENER_RETRY_MAX + 1. Default is 2.",
+      "howToGet": "Tune to reduce error rate vs. response time.",
+      "example": "2",
+      "isSecret": false,
+      "required": false
+    },
+    {
+      "key": "DEXSCREENER_RETRY_BASE_DELAY_MS",
+      "title": "DexScreener Retry Base Delay (ms)",
+      "description": "Optional. Base delay for exponential backoff between retries.",
+      "usage": "Delay grows exponentially per attempt and includes jitter. Default is 500.",
+      "howToGet": "Tune to be more conservative when rate-limited.",
+      "example": "500",
+      "isSecret": false,
+      "required": false
+    },
+    {
+      "key": "ADMIN_TELEGRAM_IDS",
+      "title": "Admin Telegram IDs",
+      "description": "Optional. Comma-separated Telegram numeric user IDs allowed to run admin-only diagnostics like /dexhealth.",
+      "usage": "If missing/empty, admin features are disabled and /dexhealth will say so.",
+      "howToGet": "Get your numeric Telegram user ID (for example via a user-id bot) and set it here.",
+      "example": "123456789,987654321",
+      "isSecret": false,
+      "required": false
     }
   ],
   "commandDocs": [
@@ -1071,6 +1135,16 @@
         "User: /next → Bot: shows the next page, or the no-more-results message"
       ],
       "notes": "When out of results: “No more tokens match your filters. Try adjusting your criteria.”"
+    },
+    {
+      "command": "/dexhealth",
+      "description": "Admin-only DexScreener health check. Performs a lightweight DexScreener request and reports OK/FAIL with latency and error details.",
+      "usage": "/dexhealth",
+      "examples": [
+        "User (admin): /dexhealth → Bot: OK latencyMs=123 pairs=180",
+        "User (admin): /dexhealth → Bot: FAIL errorType=RATE_LIMIT status=429 latencyMs=50"
+      ],
+      "notes": "Only works when ADMIN_TELEGRAM_IDS is set and includes your Telegram numeric user ID. Not listed in /help."
     }
   ]
 }
