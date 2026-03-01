@@ -1,59 +1,18 @@
-Chain EX
 
-What it does
-A Telegram bot that guides users through an inline-button filter wizard to discover newly launched tokens using Dexscreener data, then paginates results with /next.
 
-Features
-1) Guided wizard (6 steps) using inline keyboards only
-2) Filters by chain, token age, market cap, and required social links
-3) Dedupes by contract address and keeps a deterministic best pair
-4) Shows 10 results per page with /next
+Troubleshooting: bot not responding
+1) Missing token
+Check logs for: TELEGRAM_BOT_TOKEN_set: false
+Fix by setting TELEGRAM_BOT_TOKEN in your environment and redeploying.
 
-Architecture
-1) src/index.js boots config and starts long polling via @grammyjs/runner
-2) src/bot.js wires commands first, then callback handlers
-3) src/services/dexscreener.js fetches and normalizes/filter results
-4) src/lib/session.js stores per-user in-memory state
+2) Webhook or polling conflict (409)
+Check logs for: 409 Conflict terminated by other getUpdates request
+This usually means two bot instances are running briefly (deploy overlap) or webhook/polling conflict.
+The bot now attempts deleteWebhook on startup and will backoff and retry automatically.
 
-Setup
-1) Install
-npm install
+3) Network or upstream issues
+If you see repeated [dex] fetch failure lines, Dexscreener may be slow or rate limiting.
+The bot uses timeouts and retries, and will respond with a short failure message instead of hanging.
 
-2) Configure
-Create a .env file with:
-TELEGRAM_BOT_TOKEN=...
-
-3) Run
-npm run dev
-
-Commands
-/start
-Starts a new wizard and clears previous state.
-
-/help
-Explains usage.
-
-/restart
-Clears state and starts wizard again.
-
-/next
-Shows next page of results (10 per page).
-
-Dexscreener integration
-The bot calls Dexscreener public API endpoints under https://api.dexscreener.com.
-If the API is unavailable or returns unexpected data, the bot shows:
-Unable to fetch data from Dexscreener. Please try again later.
-
-Deployment
-This is a single Node.js service. Set TELEGRAM_BOT_TOKEN in your environment and run:
-npm run build
-npm start
-
-Troubleshooting
-1) If the bot does not start: confirm TELEGRAM_BOT_TOKEN is set.
-2) If you see no results: widen age or market cap range, then /restart.
-3) If callbacks stop working: /restart to refresh the wizard.
-
-Extending
-Add new commands in src/commands/*.js and register them in src/bot.js (before the callback handlers).
-Add new filtering logic in src/services/dexscreener.js.
+4) Crashes without logs
+Unhandled promise rejections are now logged. If you see [process] uncaughtException, the process will exit and restart (on most platforms).

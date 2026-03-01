@@ -114,7 +114,6 @@ function normalizePair(pair) {
 }
 
 function betterRep(a, b) {
-  // Deterministic tie-breaker: prefer higher liquidity, then higher 24h volume, then newest pair.
   const aL = a._liquidityUsd || 0;
   const bL = b._liquidityUsd || 0;
   if (aL !== bL) return aL > bL;
@@ -127,25 +126,76 @@ function betterRep(a, b) {
   const bT = b._pairCreatedAt || 0;
   if (aT !== bT) return aT > bT;
 
-  // stable fallback
   return String(a._pairAddress || "") > String(b._pairAddress || "");
 }
 
-async function fetchJson(url, { timeoutMs = 15_000 } = {}) {
+function isTransientHttpStatus(status) {
+  const s = Number(status);
+  return s === 408 || s === 429 || (s >= 500 && s <= 599);
+}
+
+async function fetchJson(url, { timeoutMs = 12_000 } = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
   try {
-    const r = await fetch(url, { signal: ctrl.signal });
+    const r = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        "user-agent": "ChainEXBot/1.0",
+        accept: "application/json",
+      },
+    });
+
     if (!r.ok) {
-      const txt = await r.text().catch(() => "");
+      const body = await r.text().catch(() => "");
       const err = new Error("HTTP_" + r.status);
-      err.response = { data: { message: txt || "Dexscreener error" } };
+      err.status = r.status;
+      err.response = { data: { message: body || "Dexscreener error" } };
       throw err;
     }
+
     return await r.json();
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      const err = new Error("TIMEOUT");
+      err.code = "TIMEOUT";
+      throw err;
+    }
+    throw e;
   } finally {
     clearTimeout(t);
   }
+}
+
+async function fetchJsonWithRetry(url, { timeoutMs, maxRetries = 2 } = {}) {
+  let attempt = 0;
+  let lastErr = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      return await fetchJson(url, { timeoutMs });
+    } catch (e) {
+      lastErr = e;
+      const status = e?.status;
+      const transient = e?.code === "TIMEOUT" || e?.name === "AbortError" || isTransientHttpStatus(status);
+
+      console.warn("[dex] request attempt failed", {
+        attempt,
+        transient,
+        status: status || null,
+        err: safeErr(e),
+      });
+
+      if (!transient || attempt >= maxRetries) throw e;
+
+      const backoffMs = Math.min(2000, 400 * Math.pow(2, attempt));
+      await sleep(backoffMs);
+      attempt++;
+    }
+  }
+
+  throw lastErr || new Error("UNKNOWN");
 }
 
 export async function findTokensWithFilters(filters, { maxCandidates = 200 } = {}) {
@@ -165,18 +215,17 @@ export async function findTokensWithFilters(filters, { maxCandidates = 200 } = {
 
   const url = `${API_BASE}/latest/dex/pairs/${encodeURIComponent(dexChain)}`;
 
-  console.log("[dex] fetch start", { chain, url });
+  console.log("[dex] fetch start", {
+    chain,
+    dexChain,
+    maxCandidates,
+    requireTelegram,
+    requireDiscord,
+    requireWebsite,
+  });
 
   try {
-    // Dexscreener can sometimes be flaky; do one retry on network errors.
-    let json;
-    try {
-      json = await fetchJson(url, { timeoutMs: 15_000 });
-    } catch (e) {
-      console.warn("[dex] fetch retry", { chain, err: safeErr(e) });
-      await sleep(750);
-      json = await fetchJson(url, { timeoutMs: 15_000 });
-    }
+    const json = await fetchJsonWithRetry(url, { timeoutMs: 12_000, maxRetries: 2 });
 
     const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
     const candidates = pairs.slice(0, Math.max(0, maxCandidates));
@@ -225,7 +274,6 @@ export async function findTokensWithFilters(filters, { maxCandidates = 200 } = {
 
     const out = Array.from(dedup.values())
       .sort((a, b) => {
-        // newest first, then liquidity desc, then volume desc
         const at = a._pairCreatedAt || 0;
         const bt = b._pairCreatedAt || 0;
         if (at !== bt) return bt - at;
@@ -262,7 +310,12 @@ export async function findTokensWithFilters(filters, { maxCandidates = 200 } = {
 
     return out;
   } catch (e) {
-    console.warn("[dex] fetch failure", { chain, err: safeErr(e) });
+    console.warn("[dex] fetch failure", {
+      chain,
+      err: safeErr(e),
+    });
+
+    // Let caller decide the user-facing text, but never hang.
     throw e;
   }
 }

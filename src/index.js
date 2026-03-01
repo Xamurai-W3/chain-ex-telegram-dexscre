@@ -6,36 +6,62 @@ import { cfg } from "./lib/config.js";
 import { safeErr } from "./lib/safeErr.js";
 import { createBot } from "./bot.js";
 
+let startedAtMs = Date.now();
+
 process.on("unhandledRejection", (r) => {
-  console.error("[process] UnhandledRejection", { err: safeErr(r) });
-  process.exit(1);
+  console.error("[process] unhandledRejection", { err: safeErr(r) });
+  // Keep process alive; runner loop will continue retrying.
 });
 process.on("uncaughtException", (e) => {
-  console.error("[process] UncaughtException", { err: safeErr(e) });
+  console.error("[process] uncaughtException", { err: safeErr(e) });
+  // Uncaught exceptions are usually unrecoverable.
   process.exit(1);
 });
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isConflict409(e) {
+  const msg = safeErr(e);
+  return String(msg || "").includes("409") && String(msg || "").toLowerCase().includes("conflict");
+}
+
 async function boot() {
+  startedAtMs = Date.now();
+
   console.log("[boot] start", {
+    node: process.version,
+    env: process.env.NODE_ENV || "(unset)",
+    uptimeSec: Math.round(process.uptime()),
     TELEGRAM_BOT_TOKEN_set: !!cfg.TELEGRAM_BOT_TOKEN,
+    MONGODB_URI_set: !!cfg.MONGODB_URI,
   });
 
   if (!cfg.TELEGRAM_BOT_TOKEN) {
-    console.error("TELEGRAM_BOT_TOKEN is required. Add it to your environment and redeploy.");
+    console.error(
+      "TELEGRAM_BOT_TOKEN is required. Set it in your environment (Render: Environment tab) and redeploy."
+    );
     process.exit(1);
   }
 
   const bot = createBot(cfg.TELEGRAM_BOT_TOKEN);
 
   bot.catch((err) => {
+    const ctx = err?.ctx;
     console.error("[bot] error", {
       err: safeErr(err?.error || err),
-      updateId: err?.ctx?.update?.update_id,
+      updateId: ctx?.update?.update_id,
+      updateType: ctx?.update ? Object.keys(ctx.update)[1] || "(unknown)" : "(none)",
     });
   });
 
   try {
     await bot.init();
+    console.log("[boot] bot init ok", {
+      username: bot.botInfo?.username || "(unknown)",
+      id: bot.botInfo?.id,
+    });
   } catch (e) {
     console.warn("[boot] bot.init failed", { err: safeErr(e) });
   }
@@ -54,39 +80,65 @@ async function boot() {
   let backoffMs = 2000;
   let runner = null;
 
-  // Restart loop to tolerate deploy overlaps (409 Conflict)
-  // Ensures only one runner is active.
+  // Long-polling restart loop to tolerate deploy overlaps and conflicts.
   while (true) {
     try {
-      console.log("[polling] starting", { backoffMs });
-      await bot.api.deleteWebhook({ drop_pending_updates: true });
+      console.log("[polling] starting", {
+        backoffMs,
+        uptimeSec: Math.round(process.uptime()),
+      });
+
+      try {
+        await bot.api.deleteWebhook({ drop_pending_updates: true });
+        console.log("[polling] deleteWebhook ok");
+      } catch (e) {
+        console.warn("[polling] deleteWebhook failed", { err: safeErr(e) });
+        // Continue anyway; runner may still succeed.
+      }
 
       runner = run(bot, {
         runner: {
-          // Keep low to avoid memory growth from slow operations.
-          // This bot is mostly network-bound; 1 is safest.
           concurrency: 1,
         },
+      });
+
+      console.log("[polling] runner started", {
+        concurrency: 1,
+        bot: bot.botInfo?.username || "(unknown)",
       });
 
       await runner;
       console.warn("[polling] runner ended unexpectedly");
     } catch (e) {
-      const msg = safeErr(e);
-      const is409 = String(msg || "").includes("409") || String(e?.message || "").includes("409");
-      console.warn("[polling] failure", { err: msg, is409 });
+      const errMsg = safeErr(e);
+      const is409 = isConflict409(e);
+
+      console.warn("[polling] failure", {
+        err: errMsg,
+        is409,
+        backoffMs,
+        sinceBootSec: Math.round((Date.now() - startedAtMs) / 1000),
+      });
+
+      if (is409) {
+        // Typical causes:
+        // 1) Two instances running
+        // 2) Telegram still considers another getUpdates active briefly
+        // We backoff and retry.
+      }
 
       try {
-        if (runner?.isRunning?.()) runner.stop?.();
-      } catch {}
+        runner?.stop?.();
+      } catch (stopErr) {
+        console.warn("[polling] runner stop failed", { err: safeErr(stopErr) });
+      }
 
-      await new Promise((r) => setTimeout(r, backoffMs));
+      await sleep(backoffMs);
       backoffMs = Math.min(20000, Math.round(backoffMs * 1.7));
       continue;
     }
 
-    // runner ended without throwing: backoff and restart
-    await new Promise((r) => setTimeout(r, backoffMs));
+    await sleep(backoffMs);
     backoffMs = Math.min(20000, Math.round(backoffMs * 1.7));
   }
 }

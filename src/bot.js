@@ -7,7 +7,13 @@ import {
   getSession,
   cleanupSessions,
 } from "./lib/session.js";
-import { keyboardForStep, parseCallback, promptText, AGE_RANGES, MCAP_RANGES } from "./lib/wizard.js";
+import {
+  keyboardForStep,
+  parseCallback,
+  promptText,
+  AGE_RANGES,
+  MCAP_RANGES,
+} from "./lib/wizard.js";
 import { findTokensWithFilters } from "./services/dexscreener.js";
 import { formatTokensPage } from "./lib/format.js";
 import { buildBotProfile } from "./botProfile.js";
@@ -38,16 +44,26 @@ function ensureSession(ctx) {
   return getOrCreateSession(uid);
 }
 
+async function safeAnswerCb(ctx, text) {
+  try {
+    if (text) await ctx.answerCallbackQuery({ text });
+    else await ctx.answerCallbackQuery();
+  } catch {}
+}
+
 async function sendOrEditStep(ctx, step) {
   const uid = userIdOf(ctx);
   if (!uid) return;
+
   const s = getOrCreateSession(uid);
-  s.step = step;
+
+  // Harden session state
+  s.step = Number(step) || 1;
+  s.flowId = String(s.flowId || "");
   s.updatedAtMs = Date.now();
 
-  const flowId = String(s.flowId || "");
-  const text = promptText(step);
-  const kb = keyboardForStep(step, flowId);
+  const text = promptText(s.step);
+  const kb = keyboardForStep(s.step, s.flowId);
 
   // Prefer editing the wizard message (less clutter). If edit fails, send a new one.
   try {
@@ -65,31 +81,38 @@ async function sendOrEditStep(ctx, step) {
   s.lastWizardMessageId = m?.message_id;
 }
 
+function newFlowId() {
+  return String(Date.now()) + ":" + String(Math.floor(Math.random() * 100000));
+}
+
 async function startWizard(ctx) {
   const uid = userIdOf(ctx);
   if (!uid) return;
 
+  console.log("[cmd] /start", { userId: uid });
+
+  // /start clears search state and sends welcome message
   clearSession(uid);
   const s = getOrCreateSession(uid);
-
-  // flowId invalidates old callback buttons
-  s.flowId = String(Date.now()) + ":" + String(Math.floor(Math.random() * 100000));
+  s.flowId = newFlowId();
   s.step = 1;
 
-  console.log("[cmd] /start", { userId: uid });
   await ctx.reply(WELCOME_TEXT);
-
   await sendOrEditStep(ctx, 1);
 }
 
 async function restartWizard(ctx) {
   const uid = userIdOf(ctx);
   if (!uid) return;
+
   console.log("[cmd] /restart", { userId: uid });
+
+  // /restart clears current session state and starts step 1 without re-sending welcome
   clearSession(uid);
   const s = getOrCreateSession(uid);
-  s.flowId = String(Date.now()) + ":" + String(Math.floor(Math.random() * 100000));
+  s.flowId = newFlowId();
   s.step = 1;
+
   await sendOrEditStep(ctx, 1);
 }
 
@@ -100,7 +123,6 @@ async function showNextPage(ctx) {
 
   const s = getSession(uid);
   if (!s || !Array.isArray(s.results) || s.results.length === 0) {
-    // No explicit copy required by spec here; keep it short.
     await ctx.reply("Run /start to begin a new search.");
     return;
   }
@@ -132,9 +154,9 @@ async function computeResults(ctx) {
   const s = getSession(uid);
   if (!s) return;
 
-  // simple in-flight guard per user
+  // per-user in-flight guard
   if (s.fetching) {
-    await ctx.answerCallbackQuery({ text: "Working on your search…" }).catch(() => {});
+    await safeAnswerCb(ctx, "Working on your search…");
     return;
   }
 
@@ -152,29 +174,28 @@ async function computeResults(ctx) {
   });
 
   try {
-    await ctx.answerCallbackQuery().catch(() => {});
+    await safeAnswerCb(ctx);
     await ctx.reply("Fetching tokens…");
 
     const results = await findTokensWithFilters(s);
 
-    s.results = results;
+    s.results = Array.isArray(results) ? results : [];
     s.pageIndex = 0;
 
-    if (!results || results.length === 0) {
+    if (s.results.length === 0) {
       console.log("[wizard] fetch done (empty)", { userId: uid });
       await ctx.reply(NO_TOKENS_TEXT);
       return;
     }
 
-    console.log("[wizard] fetch done", { userId: uid, results: results.length });
+    console.log("[wizard] fetch done", { userId: uid, results: s.results.length });
 
-    // First page
-    const first = results.slice(0, PAGE_SIZE);
+    const first = s.results.slice(0, PAGE_SIZE);
     await ctx.reply(formatTokensPage(first));
 
     s.pageIndex = 1;
 
-    if (results.length > PAGE_SIZE) {
+    if (s.results.length > PAGE_SIZE) {
       await ctx.reply("Type /next to see more results.");
     }
   } catch (e) {
@@ -197,7 +218,7 @@ function rePromptCurrentStep(ctx) {
 export function createBot(token) {
   const bot = new Bot(token);
 
-  // Memory log (lightweight) and session cleanup
+  // Lightweight memory log and session cleanup
   setInterval(() => {
     cleanupSessions({ maxAgeMs: 60 * 60 * 1000 });
     const m = process.memoryUsage();
@@ -227,23 +248,27 @@ export function createBot(token) {
     const data = ctx.callbackQuery?.data;
 
     if (!uid) {
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx);
       return;
     }
 
     const parsed = parseCallback(data);
     if (!parsed) {
       console.log("[wizard] unknown callback", { userId: uid });
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx, "That menu is outdated. Use /restart.");
       await rePromptCurrentStep(ctx);
       return;
     }
 
     const s = ensureSession(ctx);
     if (!s) {
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx);
       return;
     }
+
+    // Defensive session hardening
+    s.flowId = String(s.flowId || "");
+    s.step = Number(s.step || 1);
 
     console.log("[wizard] callback", {
       userId: uid,
@@ -256,14 +281,14 @@ export function createBot(token) {
 
     // flowId mismatch: user clicked old buttons
     if (String(parsed.flowId) !== String(s.flowId)) {
-      await ctx.answerCallbackQuery({ text: "That menu is outdated. Use /restart." }).catch(() => {});
+      await safeAnswerCb(ctx, "That menu is outdated. Use /restart.");
       await rePromptCurrentStep(ctx);
       return;
     }
 
-    // out-of-order presses: recover by re-sending current prompt
+    // Out-of-order presses: recover by re-sending current prompt
     if (Number(parsed.step) !== Number(s.step)) {
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx);
       await rePromptCurrentStep(ctx);
       return;
     }
@@ -273,7 +298,7 @@ export function createBot(token) {
       if (s.step === 1 && parsed.key === "chain") {
         s.selectedChain = String(parsed.val || "");
         s.step = 2;
-        await ctx.answerCallbackQuery().catch(() => {});
+        await safeAnswerCb(ctx);
         await sendOrEditStep(ctx, 2);
         return;
       }
@@ -282,13 +307,13 @@ export function createBot(token) {
         const idx = Number(parsed.val);
         const label = AGE_RANGES[idx];
         if (!label) {
-          await ctx.answerCallbackQuery().catch(() => {});
+          await safeAnswerCb(ctx, "That menu is outdated. Use /restart.");
           await rePromptCurrentStep(ctx);
           return;
         }
         s.selectedAgeRange = label;
         s.step = 3;
-        await ctx.answerCallbackQuery().catch(() => {});
+        await safeAnswerCb(ctx);
         await sendOrEditStep(ctx, 3);
         return;
       }
@@ -297,13 +322,13 @@ export function createBot(token) {
         const idx = Number(parsed.val);
         const label = MCAP_RANGES[idx];
         if (!label) {
-          await ctx.answerCallbackQuery().catch(() => {});
+          await safeAnswerCb(ctx, "That menu is outdated. Use /restart.");
           await rePromptCurrentStep(ctx);
           return;
         }
         s.selectedMarketCapRange = label;
         s.step = 4;
-        await ctx.answerCallbackQuery().catch(() => {});
+        await safeAnswerCb(ctx);
         await sendOrEditStep(ctx, 4);
         return;
       }
@@ -311,7 +336,7 @@ export function createBot(token) {
       if (s.step === 4 && parsed.key === "tel") {
         s.requireTelegram = String(parsed.val) === "1";
         s.step = 5;
-        await ctx.answerCallbackQuery().catch(() => {});
+        await safeAnswerCb(ctx);
         await sendOrEditStep(ctx, 5);
         return;
       }
@@ -319,7 +344,7 @@ export function createBot(token) {
       if (s.step === 5 && parsed.key === "disc") {
         s.requireDiscord = String(parsed.val) === "1";
         s.step = 6;
-        await ctx.answerCallbackQuery().catch(() => {});
+        await safeAnswerCb(ctx);
         await sendOrEditStep(ctx, 6);
         return;
       }
@@ -330,17 +355,30 @@ export function createBot(token) {
         return;
       }
 
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx);
       await rePromptCurrentStep(ctx);
     } catch (e) {
       console.warn("[wizard] callback handler error", { userId: uid, err: safeErr(e) });
-      await ctx.answerCallbackQuery().catch(() => {});
+      await safeAnswerCb(ctx);
       await rePromptCurrentStep(ctx);
     }
   });
 
-  // No AI, no catch-all text handler by design.
-  // Keep profile constructed at runtime for future AI feature additions.
+  // Minimal fallback so the bot doesn't look dead if routing breaks.
+  bot.on("message", async (ctx, next) => {
+    const txt = ctx.message?.text;
+    if (typeof txt === "string" && txt.startsWith("/")) return next();
+
+    // Only respond when user is not interacting with the wizard/buttons.
+    // Keep it minimal to preserve UX.
+    if (typeof txt === "string" && txt.trim()) {
+      await ctx.reply("Use /start to begin.");
+      return;
+    }
+
+    return next();
+  });
+
   console.log("[bot] profile", { length: botProfile.length });
 
   return bot;
