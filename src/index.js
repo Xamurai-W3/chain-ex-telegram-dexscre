@@ -14,7 +14,6 @@ process.on("unhandledRejection", (r) => {
 });
 process.on("uncaughtException", (e) => {
   console.error("[process] uncaughtException", { err: safeErr(e) });
-  // Uncaught exceptions are usually unrecoverable.
   process.exit(1);
 });
 
@@ -35,7 +34,8 @@ async function boot() {
     env: process.env.NODE_ENV || "(unset)",
     uptimeSec: Math.round(process.uptime()),
     TELEGRAM_BOT_TOKEN_set: !!cfg.TELEGRAM_BOT_TOKEN,
-    MONGODB_URI_set: !!cfg.MONGODB_URI,
+    DEXSCREENER_BASE_URL_set: !!String(process.env.DEXSCREENER_BASE_URL || "").trim(),
+    ADMIN_TELEGRAM_IDS_set: !!String(process.env.ADMIN_TELEGRAM_IDS || "").trim(),
   });
 
   if (!cfg.TELEGRAM_BOT_TOKEN) {
@@ -80,7 +80,6 @@ async function boot() {
   let backoffMs = 2000;
   let runner = null;
 
-  // Long-polling restart loop to tolerate deploy overlaps and conflicts.
   while (true) {
     try {
       console.log("[polling] starting", {
@@ -93,7 +92,6 @@ async function boot() {
         console.log("[polling] deleteWebhook ok");
       } catch (e) {
         console.warn("[polling] deleteWebhook failed", { err: safeErr(e) });
-        // Continue anyway; runner may still succeed.
       }
 
       runner = run(bot, {
@@ -119,13 +117,6 @@ async function boot() {
         backoffMs,
         sinceBootSec: Math.round((Date.now() - startedAtMs) / 1000),
       });
-
-      if (is409) {
-        // Typical causes:
-        // 1) Two instances running
-        // 2) Telegram still considers another getUpdates active briefly
-        // We backoff and retry.
-      }
 
       try {
         runner?.stop?.();

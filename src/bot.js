@@ -14,7 +14,11 @@ import {
   AGE_RANGES,
   MCAP_RANGES,
 } from "./lib/wizard.js";
-import { findTokensWithFilters } from "./services/dexscreener.js";
+import {
+  findTokensWithFilters,
+  dexscreenerUserMessage,
+  fetchLatestDexPairs,
+} from "./services/dexscreener.js";
 import { formatTokensPage } from "./lib/format.js";
 import { buildBotProfile } from "./botProfile.js";
 
@@ -23,9 +27,6 @@ const WELCOME_TEXT =
 
 const NO_TOKENS_TEXT =
   "No tokens found with selected filters. Try widening age or market cap range.";
-
-const API_FAIL_TEXT =
-  "Unable to fetch data from Dexscreener. Please try again later.";
 
 const NO_MORE_TEXT =
   "No more tokens match your filters. Try adjusting your criteria.";
@@ -49,6 +50,27 @@ async function safeAnswerCb(ctx, text) {
     if (text) await ctx.answerCallbackQuery({ text });
     else await ctx.answerCallbackQuery();
   } catch {}
+}
+
+function parseAdminIds() {
+  const raw = String(process.env.ADMIN_TELEGRAM_IDS || "").trim();
+  if (!raw) return { enabled: false, ids: new Set() };
+  const ids = new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  return { enabled: ids.size > 0, ids };
+}
+
+function chainToDex(chain) {
+  const c = String(chain || "").toUpperCase();
+  if (c === "ETH") return "ethereum";
+  if (c === "SOL") return "solana";
+  if (c === "BSC") return "bsc";
+  if (c === "BASE") return "base";
+  return "";
 }
 
 async function sendOrEditStep(ctx, step) {
@@ -177,9 +199,29 @@ async function computeResults(ctx) {
     await safeAnswerCb(ctx);
     await ctx.reply("Fetching tokens…");
 
-    const results = await findTokensWithFilters(s);
+    const res = await findTokensWithFilters(s);
 
-    s.results = Array.isArray(results) ? results : [];
+    if (!res.ok) {
+      console.warn("[wizard] fetch error", {
+        userId: uid,
+        errorType: res.errorType,
+        status: res.status || null,
+      });
+
+      // If there is already cached results, keep them and allow /next to paginate.
+      const haveCached = Array.isArray(s.results) && s.results.length > 0;
+      if (haveCached) {
+        await ctx.reply(dexscreenerUserMessage(res));
+        return;
+      }
+
+      await ctx.reply(dexscreenerUserMessage(res) + " You can try /restart.");
+      return;
+    }
+
+    const results = Array.isArray(res.data) ? res.data : [];
+
+    s.results = results;
     s.pageIndex = 0;
 
     if (s.results.length === 0) {
@@ -199,8 +241,15 @@ async function computeResults(ctx) {
       await ctx.reply("Type /next to see more results.");
     }
   } catch (e) {
-    console.warn("[wizard] fetch error", { userId: uid, err: safeErr(e) });
-    await ctx.reply(API_FAIL_TEXT);
+    console.warn("[wizard] fetch exception", { userId: uid, err: safeErr(e) });
+
+    const haveCached = Array.isArray(s.results) && s.results.length > 0;
+    if (haveCached) {
+      await ctx.reply("DexScreener is taking too long to respond right now. Please try again in a moment.");
+      return;
+    }
+
+    await ctx.reply("DexScreener is taking too long to respond right now. Please try again in a moment. You can try /restart.");
   } finally {
     s.fetching = false;
     s.updatedAtMs = Date.now();
@@ -241,6 +290,44 @@ export function createBot(token) {
 
   bot.command("restart", async (ctx) => restartWizard(ctx));
   bot.command("next", async (ctx) => showNextPage(ctx));
+
+  bot.command("dexhealth", async (ctx) => {
+    const uid = String(userIdOf(ctx) || "");
+    const admin = parseAdminIds();
+
+    console.log("[cmd] /dexhealth", {
+      userId: uid || null,
+      adminEnabled: admin.enabled,
+    });
+
+    if (!admin.enabled) {
+      await ctx.reply("Admin features are disabled.");
+      return;
+    }
+
+    if (!uid || !admin.ids.has(uid)) {
+      await ctx.reply("Not authorized.");
+      return;
+    }
+
+    const s = getSession(uid);
+    const chain = s?.selectedChain || "ETH";
+    const dexChain = chainToDex(chain) || "ethereum";
+
+    const started = Date.now();
+    const res = await fetchLatestDexPairs(dexChain);
+    const latencyMs = Date.now() - started;
+
+    if (res.ok) {
+      const pairsCount = Array.isArray(res.data?.pairs) ? res.data.pairs.length : 0;
+      await ctx.reply(`OK latencyMs=${latencyMs} pairs=${pairsCount}`);
+      return;
+    }
+
+    await ctx.reply(
+      `FAIL errorType=${String(res.errorType || "UNKNOWN")} status=${res.status || "(none)"} latencyMs=${latencyMs}`
+    );
+  });
 
   // Callback handler for wizard
   bot.on("callback_query:data", async (ctx) => {
@@ -369,8 +456,6 @@ export function createBot(token) {
     const txt = ctx.message?.text;
     if (typeof txt === "string" && txt.startsWith("/")) return next();
 
-    // Only respond when user is not interacting with the wizard/buttons.
-    // Keep it minimal to preserve UX.
     if (typeof txt === "string" && txt.trim()) {
       await ctx.reply("Use /start to begin.");
       return;
